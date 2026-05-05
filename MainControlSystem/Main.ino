@@ -108,7 +108,6 @@ void loop() {
         setPioServoAngle(pio, sm1, out1, 180.0);
         setPioServoAngle(pio, sm2, out2, 180.0);
     } else {
-        // 若角度不合法，退回上一個安全座標
         targetX = oldX;
         targetY = oldY;
         targetZ = oldZ;

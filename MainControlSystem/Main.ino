@@ -19,7 +19,6 @@ extern void calculateAngles(float x, float y, float z, float &angleBase, float &
 extern void checkSerial();
 
 PIO pio = pio0;
-uint sm_base = 0;
 uint sm1 = 1;
 uint sm2 = 2;
 
@@ -34,7 +33,14 @@ static const struct pio_program pio_servo_program = {
 };
 
 void setupPioServo(PIO pio, uint sm, uint pin) {
-    uint offset = pio_add_program(pio, &pio_servo_program);
+    static uint offset = 0;
+    static bool programLoaded = false;
+    
+    if (!programLoaded) {
+        offset = pio_add_program(pio, &pio_servo_program);
+        programLoaded = true;
+    }
+    
     pio_gpio_init(pio, pin);
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
     
@@ -62,9 +68,7 @@ void setPioServoAngle(PIO pio, uint sm, float angle, float max_angle) {
 
 void setup() {
     Serial.begin(115200);
-    
-    // 初始化三個軸的 PIO 控制
-    setupPioServo(pio, sm_base, SERVO_BASE_PIN);
+    setupBaseMotor();
     setupPioServo(pio, sm1, SERVO1_PIN);
     setupPioServo(pio, sm2, SERVO2_PIN);
     
@@ -80,32 +84,27 @@ void loop() {
     checkSerial();
     // checkBluetooth(); 
 
-    // --- 緊急停止攔截 ---
+    // --- Emergency Stop ---
     if (eStop) {
-        // 放棄新的輸入，鎖死在最後的安全座標
         targetX = oldX;
         targetY = oldY;
         targetZ = oldZ;
         delay(20);
-        return; // 直接跳出這次 loop，不更新馬達
+        return; 
     }
 
     float aBase, a1, a2;
-    // 逆向運動學計算
     calculateAngles(targetX, targetY, targetZ, aBase, a1, a2);
 
-    // 檢查角度是否在安全範圍內，避免機構碰撞
     bool isValid = !isnan(aBase) && !isnan(a1) && !isnan(a2) &&
                    (a1 >= 10 && a1 <= 130) &&
                    ((a2 - a1) >= 45); 
 
     if (isValid) {
-        // 根據硬體組裝方向調整實際輸出的角度
         float out1 = 130.0 - a1;
         float out2 = a2 - 40.0;
 
-        // 驅動三軸馬達
-        setPioServoAngle(pio, sm_base, aBase, 180.0);
+        runBasePID(aBase);
         setPioServoAngle(pio, sm1, out1, 180.0);
         setPioServoAngle(pio, sm2, out2, 180.0);
     } else {

@@ -6,7 +6,6 @@ extern float targetY;
 extern float targetZ;
 
 void setupBluetooth() {
-    // Pico 2W 的 SerialBT 預期接收鮑率 (Baud rate)，我們設定為 115200
     SerialBT.begin(115200); 
     Serial.println("Bluetooth initialized. Waiting for connection...");
 }
@@ -15,7 +14,6 @@ void checkBluetooth() {
         String cmd = SerialBT.readStringUntil('\n');
         cmd.trim();
 
-        // 預期格式: "X:100,Y:50,Z:80"
         int firstComma = cmd.indexOf(',');
         int secondComma = cmd.lastIndexOf(',');
 

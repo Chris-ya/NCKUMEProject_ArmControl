@@ -1,7 +1,5 @@
-// BaseMotor.ino
 #include <Arduino.h>
 
-// --- 腳位定義 ---
 #define ENCA_PIN 6
 #define ENCB_PIN 7
 #define PWMA_PIN 2
@@ -11,21 +9,57 @@
 const float PPR = 11;
 const float Internal_Gear_Ratio = 46.8;
 const float Outer_Gear_Ratio = 3;
-const float TICKS_PER_REV = PRP * Internal_Gear_Ratio * Outer_Gear_Ratio; 
+const float TICKS_PER_REV = PPR * Internal_Gear_Ratio * Outer_Gear_Ratio; 
 
-// --- PID 參數 ---
-float Kp = 2.5;  // 比例常數 (過小推不動，過大會震盪)
-float Ki = 0.01; // 積分常數 (消除靜態誤差)
-float Kd = 0.5;  // 微分常數 (抑制震盪)
+float Kp = 2.5;  
+float Ki = 0.01; 
+float Kd = 0.5;  
 
-// --- 全域變數 ---
-volatile long currentTicks = 0; // 記錄當下編碼器位置
+volatile long currentTicks = 0; 
 float errorSum = 0;
 float lastError = 0;
 
-// 編碼器中斷服務常式 (ISR)
+// PIO setting
+PIO base_pio = pio0;   
+uint base_sm = 0;       
+const uint32_t PIO_PWM_PERIOD = 2000; // 設定週期為 2000 (約等於 500Hz，適合直流馬達)
+
+static const uint16_t pio_pwm_instructions[] = {
+    0x8080, 0xa027, 0xa046, 0x00a5, 0xe000, 0x0083, 0xe001
+};
+
+static const struct pio_program pio_pwm_program = {
+    .instructions = pio_pwm_instructions,
+    .length = 7,
+    .origin = -1,
+};
+
+void setupPioMotorPWM(PIO pio, uint sm, uint pin) {
+    uint offset = pio_add_program(pio, &pio_pwm_program);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset, offset + 6);
+    sm_config_set_set_pins(&c, pin, 1);
+    
+    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / 2000000.0f);
+    
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+    
+    pio_sm_put_blocking(pio, sm, PIO_PWM_PERIOD);
+    pio_sm_exec(pio, sm, pio_encode_pull(false, false));
+    pio_sm_exec(pio, sm, pio_encode_mov(pio_isr, pio_osr));
+}
+
+void setPioMotorPower(PIO pio, uint sm, int pwmValue_0_to_255) {
+    uint32_t on_time = (pwmValue_0_to_255 * PIO_PWM_PERIOD) / 255;
+    uint32_t duty_val = PIO_PWM_PERIOD - on_time;     
+    pio_sm_put_blocking(pio, sm, duty_val);
+}
+
 void readEncoder() {
-    // 判斷旋轉方向
     int b = digitalRead(ENCB_PIN);
     if (b > 0) {
         currentTicks++;
@@ -37,15 +71,13 @@ void readEncoder() {
 void setupBaseMotor() {
     pinMode(ENCA_PIN, INPUT_PULLUP);
     pinMode(ENCB_PIN, INPUT_PULLUP);
-    pinMode(PWMA_PIN, OUTPUT);
     pinMode(AIN1_PIN, OUTPUT);
     pinMode(AIN2_PIN, OUTPUT);
+    setupPioMotorPWM(base_pio, base_sm, PWMA_PIN);
 
-    // 設定中斷，當 ENCA 發生上升沿時觸發
     attachInterrupt(digitalPinToInterrupt(ENCA_PIN), readEncoder, RISING);
 }
 
-// 驅動 TB6612 的底層函式
 void setMotorPower(int power) {
     if (power > 0) {
         digitalWrite(AIN1_PIN, HIGH);
@@ -58,35 +90,26 @@ void setMotorPower(int power) {
         digitalWrite(AIN2_PIN, LOW);
     }
     
-    // 限制 PWM 範圍在 0~255 (預設 Arduino analogWrite 範圍)
     int pwmValue = abs(power);
     if (pwmValue > 255) pwmValue = 255;
-    analogWrite(PWMA_PIN, pwmValue);
+    setPioMotorPower(base_pio, base_sm, pwmValue);
 }
 
-// 執行 PID 控制
 void runBasePID(float targetAngleDegree) {
-    // 將 IK 算出的目標角度 (0~180 或 -90~90) 轉換為目標脈衝數
-    // 假設 0 度對應 0 ticks
+    
     long targetTicks = (targetAngleDegree / 360.0) * TICKS_PER_REV;
     
-    // 1. 計算誤差 (Error)
     long error = targetTicks - currentTicks;
     
-    // 2. 計算積分項與微分項
     errorSum += error;
     float dError = error - lastError;
     
-    // 積分限幅 (避免長時間卡住導致積分飽和，暴衝)
     if(errorSum > 1000) errorSum = 1000;
     if(errorSum < -1000) errorSum = -1000;
 
-    // 3. PID 輸出計算
     float output = (Kp * error) + (Ki * errorSum) + (Kd * dError);
     
-    // 4. 輸出動力到 TB6612
     setMotorPower((int)output);
     
-    // 5. 更新上次誤差
     lastError = error;
 }

@@ -19,9 +19,7 @@ volatile long currentTicks = 0;
 float errorSum = 0;
 float lastError = 0;
 
-// PIO setting
-PIO base_pio = pio0;   
-uint base_sm = 0;       
+       
 const uint32_t PIO_PWM_PERIOD = 2000; // 設定週期為 2000 (約等於 500Hz，適合直流馬達)
 
 static const uint16_t pio_pwm_instructions[] = {

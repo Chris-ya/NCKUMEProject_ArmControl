@@ -26,7 +26,7 @@ struct __attribute__((__packed__)) RobotControlPacket {
 };
 
 RobotControlPacket rxPacket;
-bool btnState[8] = {0};
+// bool btnState[8] = {0};
 
 bool isButtonPressed(uint8_t currentState, uint8_t &lastState) {
     bool justPressed = (currentState == 0 && lastState == 1);

@@ -18,13 +18,12 @@ uint8_t lastStopBtnState = 1;
 uint8_t currentClawBtnState = 0;
 
 
-
 struct __attribute__((__packed__)) RobotControlPacket {
-    char startMarker;
-    uint16_t analogSignals[6]; 
-    uint8_t digitalBits;       
-    char endMarker;
-}; 
+  char startMarker;           
+  uint16_t analogSignals[6];  
+  uint8_t btnState[8];
+  char endMarker;             
+};
 
 RobotControlPacket rxPacket;
 bool btnState[8] = {0};

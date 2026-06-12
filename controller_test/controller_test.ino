@@ -1,15 +1,11 @@
 #include <Arduino.h>
 
-// ==========================================
-// UART 腳位定義 (Pico 2W 的 Serial1)
-// ==========================================
 #define TX1 0
 #define RX1 1
 
 // ==========================================
 // 📡 雙向通訊結構體定義 (與遙控器端完美對齊)
 // ==========================================
-// 接收端：24 位元組無線控制結構體
 struct __attribute__((__packed__)) RobotControlPacket {
   char startMarker;           // 1 Byte
   uint8_t _padding1;          // 1 Byte
@@ -19,7 +15,6 @@ struct __attribute__((__packed__)) RobotControlPacket {
   uint8_t _padding2;          // 1 Byte
 };
 
-// 發送端：8 位元組回傳測試結構體
 struct __attribute__((__packed__)) RobotFeedbackPacket {
   char startMarker = '[';     // 1 Byte
   int16_t robotArmX;          // 2 Bytes
@@ -37,23 +32,25 @@ RobotFeedbackPacket txFeedbackPacket;
 uint8_t rxBuffer[24];
 size_t bufferIndex = 0;
 
-unsigned long lastByteIncomingTime = 0; // 斷線與超時防卡死計時
-unsigned long lastSuccessTime = 0;      // 💡 用於精準計算遙控器發射頻率 (Hz)
+unsigned long lastByteIncomingTime = 0; 
+unsigned long lastSuccessTime = 0;      // 用於計算 Hz 與檢測斷線
 
-// 獨立出來的回傳封包定時器 (半雙工分流：避免塞爆航道)
+// 獨立出來的回傳封包定時器 (20 Hz)
 unsigned long lastTxFeedbackTime = 0;
-const unsigned long FEEDBACK_INTERVAL = 50; // 50ms 對應 20 Hz 回傳頻率
+const unsigned long FEEDBACK_INTERVAL = 50; 
+
+// 🎯 斷線提示專用狀態旗標
+bool remoteAlive = false;
 
 void setup() {
-  Serial.begin(115200); // 電腦除錯監控
+  Serial.begin(115200); 
   
-  // 啟動與遙控器 HC-12 通訊的 UART1
   Serial1.setTX(TX1);  
   Serial1.setRX(RX1);
   Serial1.begin(9600);
 
   Serial.println("=============================================");
-  Serial.println("🤖 Raspberry Pi Pico 2W 無線訊號測試診斷程式 🚀");
+  Serial.println("🤖 Pico 2W 終極滑動對齊與雙向通訊測試診斷程式 🚀");
   Serial.println("=============================================");
 }
 
@@ -61,45 +58,38 @@ void loop() {
   unsigned long currentTime = millis();
 
   // -----------------------------------------------------------------------
-  // ⚡ 任務 1：接收與解析遙控器訊號，並精準計算發射頻率
+  // ⚡ 任務 1：接收與強效對齊解析遙控器訊號
   // -----------------------------------------------------------------------
-  if (bufferIndex > 0 && (currentTime - lastByteIncomingTime > 100)) {
-    bufferIndex = 0;
-    while(Serial1.available() > 0) { Serial1.read(); }
-    Serial.println("♻️ 拼包超時！已自動清空接收緩衝區。");
-  }
-
   while (Serial1.available() > 0) {
     uint8_t incomingByte = Serial1.read();
-    lastByteIncomingTime = currentTime; 
+    lastByteIncomingTime = currentTime;
 
-    // 強效對齊
-    if (bufferIndex == 0 && incomingByte != '<') {
-      continue;
+    // 將收到的字元依序塞入緩衝區
+    if (bufferIndex < 24) {
+      rxBuffer[bufferIndex++] = incomingByte;
     }
 
-    rxBuffer[bufferIndex++] = incomingByte;
-    
-    // 當收滿 24 Bytes 進行解包與頻率計算
+    // 當收集滿 24 Bytes，啟動強效對齊檢驗
     if (bufferIndex >= 24) {
+      
+      // 💡 只有當頭尾同時完全符合，才算真正解包成功！
       if (rxBuffer[0] == '<' && rxBuffer[23] == '>') {
         
-        // 💡 【精準頻率計算核心】
+        // 精準頻率計算
         if (lastSuccessTime > 0) {
-          unsigned long packetInterval = currentTime - lastSuccessTime; // 計算兩次成功解包的時間差(ms)
-          float frequency = 1000.0 / packetInterval;                    // 轉換為標準 Hz 頻率
-          
+          unsigned long packetInterval = currentTime - lastSuccessTime;
+          float frequency = 1000.0 / packetInterval;
           Serial.print("📊 遙控器發射頻率: ");
           Serial.print(frequency, 1);
-          Serial.print(" Hz (間隔: ");
-          Serial.print(packetInterval);
-          Serial.print(" ms) | ");
+          Serial.print(" Hz | ");
         } else {
-          Serial.print("✨ 成功接收第一筆封包! | ");
+          Serial.print("✨ 首次連線成功! | ");
         }
-        lastSuccessTime = currentTime; // 更新成功時間點
+        
+        lastSuccessTime = currentTime; // 刷新成功解包時間點
+        remoteAlive = true;            // 標記遙控器目前活著
 
-        // 🛠️ 記憶體對齊拆解 (24 Bytes 精準映射)
+        // 二進位精準映射至結構體欄位
         for (int i = 0; i < 6; i++) {
           int baseIdx = 2 + (i * 2);
           rxPacket.analogSignals[i] = rxBuffer[baseIdx] | (rxBuffer[baseIdx + 1] << 8);
@@ -108,31 +98,40 @@ void loop() {
           rxPacket.btnState[i] = rxBuffer[14 + i];
         }
 
-        // 印出實時數據驗證是否有錯位亂碼
+        // 輸出乾淨數據供開發排查
         Serial.print("A1~A6:[");
         for(int i=0; i<6; i++) {
           Serial.print(rxPacket.analogSignals[i]);
           if(i<5) Serial.print("/");
         }
         Serial.print("] BTN:[");
-        for(int i=0; i<3; i++) { // 先看前 3 顆接好的按鈕
+        for(int i=0; i<3; i++) { 
           Serial.print(rxPacket.btnState[i]);
           if(i<2) Serial.print(",");
         }
         Serial.println("]");
 
+        bufferIndex = 0; // 完美解包，清空緩衝區等待下一包
+
       } else {
-        Serial.print("❌ 封包頭尾校驗失敗! Head: ");
-        Serial.print((char)rxBuffer[0]);
-        Serial.print(" Tail: ");
-        Serial.println((char)rxBuffer[23]);
-
-        bufferIndex = 0;
-        while(Serial1.available() > 0) { Serial1.read(); } 
+        // 💡 【核心修正：滑動視窗對齊】
+        // 如果頭尾不吻合，代表我們抓錯開頭了！
+        // 將整個緩衝區的資料集體往前挪移 1 Byte，拋棄最前面的髒字元，尋找真正的對齊點
+        for (size_t i = 1; i < 24; i++) {
+          rxBuffer[i - 1] = rxBuffer[i];
+        }
+        bufferIndex = 23; // 指標退回 23，讓 loop 下一次進來的 Byte 填補在最後一個位置
       }
-
-      bufferIndex = 0;
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // 🚨 🎯 新增：超時斷線提示功能 (心跳超時檢測)
+  // -----------------------------------------------------------------------
+  // 如果原本是連線狀態，但超過 500ms 沒能成功解開任何一包正確封包
+  if (remoteAlive && (currentTime - lastSuccessTime > 500)) {
+    remoteAlive = false; // 變更狀態為斷線
+    Serial.println("\n🚨 [WARNING] 遙控器連線中斷！請檢查發射端電源或 HC-12 線路。");
   }
 
   // -----------------------------------------------------------------------
@@ -141,11 +140,10 @@ void loop() {
   if (currentTime - lastTxFeedbackTime >= FEEDBACK_INTERVAL) {
     lastTxFeedbackTime = currentTime;
 
-    // 填入固定的測試用座標數據 (若通訊成功，遙控器螢幕會恆定顯示這組數值)
+    // 固定回傳測試座標
     txFeedbackPacket.robotArmX = 555;  
     txFeedbackPacket.robotArmY = -666; 
 
-    // 噴出 8 位元組二進位資料回傳給遙控器
     Serial1.write((uint8_t*)&txFeedbackPacket, sizeof(txFeedbackPacket));
   }
 }

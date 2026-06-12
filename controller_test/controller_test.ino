@@ -42,7 +42,7 @@ const unsigned long FEEDBACK_INTERVAL = 50;
 // 斷線提示專用狀態旗標
 bool remoteAlive = false;
 
-// 🎯 新增：用於偵測按鈕「邊緣觸發 (Just Pressed)」的狀態追蹤陣列
+// 用于偵測按鈕邊緣觸發的狀態追蹤陣列
 uint8_t lastBtnStates[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 void setup() {
@@ -52,11 +52,8 @@ void setup() {
   Serial1.setRX(RX1);
   Serial1.begin(9600);
 
-  // 初始化隨機數生成器（讀取浮空腳位 A2 的雜訊作為種子）
-  randomSeed(analogRead(A2));
-
   Serial.println("=============================================");
-  Serial.println("🤖 Pico 2W 按鈕偵測與隨機回傳核心診斷程式  🚀");
+  Serial.println("🤖 Pico 2W 按鈕偵測與固定座標回傳測試程式  🚀");
   Serial.println("=============================================");
 }
 
@@ -64,21 +61,17 @@ void loop() {
   unsigned long currentTime = millis();
 
   // -----------------------------------------------------------------------
-  // ⚡ 任務 1：全非同步接收與滑動對齊解析遙控器訊號 (絕對不卡死)
+  // ⚡ 任務 1：全非同步接收與滑動對齊解析遙控器訊號
   // -----------------------------------------------------------------------
   while (Serial1.available() > 0) {
     uint8_t incomingByte = Serial1.read();
     lastByteIncomingTime = currentTime;
 
-    // 將收到的字元依序塞入緩衝區
     if (bufferIndex < 24) {
       rxBuffer[bufferIndex++] = incomingByte;
     }
 
-    // 當收集滿 24 Bytes，啟動強效對齊檢驗
     if (bufferIndex >= 24) {
-      
-      // 💡 只有當頭尾同時完全符合，才算真正解包成功！
       if (rxBuffer[0] == '<' && rxBuffer[23] == '>') {
         
         // 精準頻率計算
@@ -92,10 +85,10 @@ void loop() {
           Serial.print("✨ 首次連線成功! | ");
         }
         
-        lastSuccessTime = currentTime; // 刷新成功解包時間點
-        remoteAlive = true;            // 標記遙控器目前活著
+        lastSuccessTime = currentTime; 
+        remoteAlive = true;            
 
-        // 二進位精準映射至結構體欄位
+        // 二進位精準映射
         for (int i = 0; i < 6; i++) {
           int baseIdx = 2 + (i * 2);
           rxPacket.analogSignals[i] = rxBuffer[baseIdx] | (rxBuffer[baseIdx + 1] << 8);
@@ -104,20 +97,17 @@ void loop() {
           rxPacket.btnState[i] = rxBuffer[14 + i];
         }
 
-        // 🎯 【新增核心功能：實時按鈕狀態變更偵測】
-        // 迴圈比對 B1 ~ B7 (index 0~6) 的前次狀態與目前狀態
+        // 實時按鈕邊緣觸發偵測
         for (int i = 0; i < 7; i++) {
-          // 如果前一次是 0 (放開)，這一次是 1 (按下)，代表按鈕剛好被觸發
           if (rxPacket.btnState[i] == 1 && lastBtnStates[i] == 0) {
             Serial.print(" - [按鈕提示] 實體按鈕 B");
             Serial.print(i + 1);
             Serial.println(" 被按下了！💥");
           }
-          // 同步刷新按鈕歷史紀錄
           lastBtnStates[i] = rxPacket.btnState[i];
         }
 
-        // 輸出乾淨數據供開發排查
+        // 輸出數據
         Serial.print("A1~A6:[");
         for(int i=0; i<6; i++) {
           Serial.print(rxPacket.analogSignals[i]);
@@ -130,14 +120,13 @@ void loop() {
         }
         Serial.println("]");
 
-        bufferIndex = 0; // 完美解包，清空緩衝區等待下一包
+        bufferIndex = 0; 
 
       } else {
-        // 關鍵修復：正確的陣列滑動挪移邊界
         for (size_t i = 1; i < 24; i++) {
           rxBuffer[i - 1] = rxBuffer[i];
         }
-        bufferIndex = 23; // 指標退回 23，讓下一次進來的字元填補在 rxBuffer[23] 結尾
+        bufferIndex = 23; 
       }
     }
   }
@@ -145,20 +134,21 @@ void loop() {
   // -----------------------------------------------------------------------
   // 🚨 超時斷線提示功能 (心跳超時檢測)
   // -----------------------------------------------------------------------
-  if (remoteAlive && (currentTime - lastSuccessTime > 500)) { remoteAlive = false; Serial.println("\n🚨 [WARNING] 遙控器連線中斷！請檢查發射端電源或 HC-12 線路。");
-    // 斷線時重置所有按鈕追蹤狀態，防復連時觸發誤判
+  if (remoteAlive && (currentTime - lastSuccessTime > 500)) {
+    remoteAlive = false; 
+    Serial.println("\n🚨 [WARNING] 遙控器連線中斷！請檢查發射端電源或 HC-12 線路。");
     for (int i = 0; i < 8; i++) lastBtnStates[i] = 0;
   }
 
   // -----------------------------------------------------------------------
-  // 📡 任務 2：定時回傳 8 Bytes 測試封包給遙控器 (20 Hz 非阻塞)
+  // 📡 任務 2：定時回傳固定封包給遙控器 (20 Hz 非阻塞)
   // -----------------------------------------------------------------------
   if (currentTime - lastTxFeedbackTime >= FEEDBACK_INTERVAL) {
     lastTxFeedbackTime = currentTime;
 
-    // 回傳座標變更為隨機跳動值
-    txFeedbackPacket.robotArmX = (int16_t)random(0, 201);     // 生成 0 ~ 200 的隨機數
-    txFeedbackPacket.robotArmY = (int16_t)random(-100, 1);    // 生成 -100 ~ 0 的隨機數
+    // 🎯 拿掉隨機，改回最安全的固定常數測試
+    txFeedbackPacket.robotArmX = 555;  
+    txFeedbackPacket.robotArmY = -666; 
 
     Serial1.write((uint8_t*)&txFeedbackPacket, sizeof(txFeedbackPacket));
   }

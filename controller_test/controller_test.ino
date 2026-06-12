@@ -39,7 +39,7 @@ unsigned long lastSuccessTime = 0;      // 用於計算 Hz 與檢測斷線
 unsigned long lastTxFeedbackTime = 0;
 const unsigned long FEEDBACK_INTERVAL = 50; 
 
-// 🎯 斷線提示專用狀態旗標
+// 斷線提示專用狀態旗標
 bool remoteAlive = false;
 
 void setup() {
@@ -49,8 +49,11 @@ void setup() {
   Serial1.setRX(RX1);
   Serial1.begin(9600);
 
+  // 🎯 初始化隨機數生成器（讀取浮空腳位 A2 的雜訊作為種子）
+  randomSeed(analogRead(A2));
+
   Serial.println("=============================================");
-  Serial.println("🤖 Pico 2W 終極滑動對齊與雙向通訊測試診斷程式 🚀");
+  Serial.println("🤖 Pico 2W 隨機座標回傳與雙向通訊測試診斷程式 🚀");
   Serial.println("=============================================");
 }
 
@@ -58,7 +61,7 @@ void loop() {
   unsigned long currentTime = millis();
 
   // -----------------------------------------------------------------------
-  // ⚡ 任務 1：接收與強效對齊解析遙控器訊號
+  // ⚡ 任務 1：全非同步接收與滑動對齊解析遙控器訊號 (絕對不卡死)
   // -----------------------------------------------------------------------
   while (Serial1.available() > 0) {
     uint8_t incomingByte = Serial1.read();
@@ -114,21 +117,18 @@ void loop() {
         bufferIndex = 0; // 完美解包，清空緩衝區等待下一包
 
       } else {
-        // 💡 【核心修正：滑動視窗對齊】
-        // 如果頭尾不吻合，代表我們抓錯開頭了！
-        // 將整個緩衝區的資料集體往前挪移 1 Byte，拋棄最前面的髒字元，尋找真正的對齊點
+        // 關鍵修復：正確的陣列滑動挪移邊界
         for (size_t i = 1; i < 24; i++) {
           rxBuffer[i - 1] = rxBuffer[i];
         }
-        bufferIndex = 23; // 指標退回 23，讓 loop 下一次進來的 Byte 填補在最後一個位置
+        bufferIndex = 23; // 指標退回 23，讓下一次進來的字元填補在 rxBuffer[23] 結尾
       }
     }
   }
 
   // -----------------------------------------------------------------------
-  // 🚨 🎯 新增：超時斷線提示功能 (心跳超時檢測)
+  // 🚨 超時斷線提示功能 (心跳超時檢測)
   // -----------------------------------------------------------------------
-  // 如果原本是連線狀態，但超過 500ms 沒能成功解開任何一包正確封包
   if (remoteAlive && (currentTime - lastSuccessTime > 500)) {
     remoteAlive = false; // 變更狀態為斷線
     Serial.println("\n🚨 [WARNING] 遙控器連線中斷！請檢查發射端電源或 HC-12 線路。");
@@ -140,9 +140,9 @@ void loop() {
   if (currentTime - lastTxFeedbackTime >= FEEDBACK_INTERVAL) {
     lastTxFeedbackTime = currentTime;
 
-    // 固定回傳測試座標
-    txFeedbackPacket.robotArmX = 555;  
-    txFeedbackPacket.robotArmY = -666; 
+    // 🎯 核心修改：回傳座標變更為隨機跳動值
+    txFeedbackPacket.robotArmX = (int16_t)random(0, 201);     // 生成 0 ~ 200 的隨機數
+    txFeedbackPacket.robotArmY = (int16_t)random(-100, 1);    // 生成 -100 ~ 0 的隨機數
 
     Serial1.write((uint8_t*)&txFeedbackPacket, sizeof(txFeedbackPacket));
   }

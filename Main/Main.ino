@@ -1,57 +1,119 @@
 #include "Config.h"
+#include <Servo.h> 
 
-// PIO 分配
-PIO armpio = pio0;   // sm0: Base PWM, sm1: Arm1, sm2: Arm2
-PIO Jawpio = pio1;   // sm0: JawBase, sm1: Jaw1, sm2: Jaw2
-PIO Feetpio = pio2;  // sm0~3: Walker Motors (BTS7960 LPWM/RPWM)
+// 引用外部 CommUART.ino 內的全域變數
+extern size_t bufferIndex;
 
-bool eStop = false;
-bool clawopen = false; // [Bug Fix] 修改 flase 為 false
-float Gain = 0.0;      // [Bug Fix] 新增 Gain 變數以修復編譯錯誤
+Servo servoArm1;
+Servo servoArm2;
+Servo servoJaw;
+Servo servoJaw1;
+Servo servoJaw2;
 
-// 初始化手臂座標
-float targetX = 168.3;
-float targetY = 0; 
-float targetZ = 69.7; 
+volatile float targetX = 168.3;
+volatile float targetY = 0;
+volatile float targetZ = 69.7;
+volatile bool eStop = false;
+volatile bool clawopen = false; 
+volatile int MAX_PWM_LIMIT = 155;
+float Gain = 0.0;
+const float MAX_VELOCITY = 1.2;      
+const int CONTROL_LOOP_DELAY = 20; 
+int walkForward = 0;
+int walkTurn = 0;
 
+unsigned long lastPacketTime = 0;
+
+// 🛡️ 安全存檔點
+float safeX = 168.3;
+float safeY = 0.0;
+float safeZ = 69.7;
+
+// ==========================================
+// 🚀 3. 手動宣告函式原型 (破解 Arduino IDE 自動產生的 Bug)
+// ==========================================
+void triggerServo(Servo& servoObj, float angle);
+
+// 實作寫入函式 (保留最高精度的微秒控制)
+void triggerServo(Servo& servoObj, float angle) {
+    float safeAngle = constrain(angle, 0.0, 180.0);
+    uint32_t pulse_us = 500 + (uint32_t)((safeAngle / 180.0) * 2000.0);
+    servoObj.writeMicroseconds(pulse_us);
+}
+
+// ==========================================
+// 核心 0：通訊接收
+// ==========================================
 void setup() {
     Serial.begin(115200);
-
-    // 基座馬達初始化
-    setupBaseMotor();
-
-    // 手臂伺服馬達初始化
-    setupPioServo(armpio, 1, SERVO1_Arm);
-    setupPioServo(armpio, 2, SERVO2_Arm);
-
-    // 夾爪伺服馬達初始化
-    setupPioServo(Jawpio, 0, SERVO_JAW);
-    setupPioServo(Jawpio, 1, SERVO1_JAW);
-    setupPioServo(Jawpio, 2, SERVO2_JAW);
-
-    // 詹森機構步足馬達初始化
-    setupWalkerMotors();
-
-    // setupBluetooth();
-    delay(1000);
-    Serial.println("System Ready. Use Arrow Keys to move X/Z, 'W'/'S' for Y, 'C' for Claw.");
+    delay(2000); 
+    //setupUART();
 }
 
 void loop() {
-    float oldX = targetX;
-    float oldY = targetY;
-    float oldZ = targetZ;
+    checkSerialMonitor();
+    // checkUART();
+    // 斷線安全防護機制 (Fail-safe)
+    if (millis() - lastPacketTime > 500) {
+        initStates(); // 強制將狀態重設為 0
 
-    checkSerial();
+        // 在 Serial 印出警告
+        static unsigned long lastWarningTime = 0;
+        if (millis() - lastWarningTime > 2000) { // 改成每兩秒印一次
+            Serial.println("⚠️ WARNING: Remote Controller Disconnected! Failsafe Activated (STOP).");
+            lastWarningTime = millis();
+        }
+    }
+}
 
-    // --- 緊急停止 ---
+void setup1() {
+    delay(1000);
+    servoArm1.attach(SERVO1_Arm, 500, 2500);
+    servoArm2.attach(SERVO2_Arm, 500, 2500);
+    servoJaw.attach(SERVO_JAW, 500, 2500);
+    servoJaw1.attach(SERVO1_JAW, 500, 2500);
+    servoJaw2.attach(SERVO2_JAW, 500, 2500);
+    setupWalkerMotors();
+    setupBaseMotor(); 
+}
+
+float getTargetVelocity(int rawValue) {
+    if (rawValue > 3000) {
+        return (float)(rawValue - 3000) / (4000.0 - 3000.0) * MAX_VELOCITY;
+    } else if (rawValue < 2000) {
+        return (float)(rawValue - 2000) / 2000.0 * MAX_VELOCITY;
+    }
+    return 0.0; 
+}
+int getWalkerPWM(int rawValue) {
+    if (rawValue > 3000) {
+        // 正向：對應 PWM 0 ~ 255
+        return map(rawValue, 3000, 4000, 0, MAX_PWM_LIMIT);
+    } else if (rawValue < 2000) {
+        // 反向：對應 PWM 0 ~ -255 (帶負號表示反轉)
+        return map(rawValue, 2000, 0, 0, -MAX_PWM_LIMIT);
+    }
+    return 0; // 搖桿在 2000~3000 的死區內，輸出 0 停止
+}
+
+void loop1() {
+    /*float targetVelX = getTargetVelocity(joyX_raw);
+    float targetVelY = 0.0;
+    float targetVelZ = getTargetVelocity(joyY_raw);
+
+    targetX += targetVelX;
+    targetY += targetVelY;
+    targetZ += targetVelZ;*/
+
+    clawopen = (btnClaw_raw == 0);
+
     if (eStop) {
-        targetX = oldX;
-        targetY = oldY;
-        targetZ = oldZ;
-        setWalkerSpeed(0, 0); // 停止步足
-        delay(20);
-        return; 
+        targetX = safeX;
+        targetY = safeY; 
+        targetZ = safeZ;
+        setWalkerSpeed(0, 0);
+        delay(CONTROL_LOOP_DELAY);
+        return;
     }
 
     float aBase, a1, a2;
@@ -62,28 +124,42 @@ void loop() {
                    ((a2 - a1) >= 45);
 
     if (isValid) {
-        float out1 = 130.0 - a1;
-        float out2 = a2 - 40.0;
+        safeX = targetX;
+        safeY = targetY;
+        safeZ = targetZ;
 
-        runBasePID(aBase);
-        setPioServoAngle(armpio, 1, out1, 180.0);
-        setPioServoAngle(armpio, 2, out2, 180.0);
-        setPioServoAngle(Jawpio, 0, -aBase + Gain, 180.0);
+        float out1 = 150.0 - a1;
+        float out2 = a2 - 30.0;
+
+        runBasePID(aBase); 
+        triggerServo(servoArm1, out1);
+        triggerServo(servoArm2, out2);
+        triggerServo(servoJaw, -aBase + Gain);
     } else {
-        // 如果運算無效，退回上一個座標
-        targetX = oldX;
-        targetY = oldY;
-        targetZ = oldZ;
+        targetX = safeX;
+        targetY = safeY;
+        targetZ = safeZ;
     }
 
-    // 夾爪控制 (MG90S 角度限制 0 ~ 55 度)
+    // 控制夾爪開合
     if (clawopen){
-        setPioServoAngle(Jawpio, 1, 55.0, 180.0);
-        setPioServoAngle(Jawpio, 2, 55.0, 180.0);
+        triggerServo(servoJaw1, 0.0);
+        triggerServo(servoJaw2, 0.0);
     } else {
-        setPioServoAngle(Jawpio, 1, 0.0, 180.0);
-        setPioServoAngle(Jawpio, 2, 0.0, 180.0);
+        triggerServo(servoJaw1, 50.0);
+        triggerServo(servoJaw2, 50.0);
     }
+    /*
+    int walkForward = getWalkerPWM(joyWalkY_raw); 
+    int walkTurn    = getWalkerPWM(joyWalkX_raw); 
+    */
+    int leftMotorSpeed  = walkForward + 0.5*walkTurn;
+    int rightMotorSpeed = walkForward - 0.5*walkTurn;
 
-    delay(20); 
+    leftMotorSpeed  = constrain(leftMotorSpeed, -MAX_PWM_LIMIT, MAX_PWM_LIMIT);
+    rightMotorSpeed = constrain(rightMotorSpeed, -MAX_PWM_LIMIT, MAX_PWM_LIMIT)*1.25;
+
+    setWalkerSpeed(leftMotorSpeed, rightMotorSpeed);
+
+    delay(CONTROL_LOOP_DELAY); 
 }

@@ -12,7 +12,7 @@ Servo servoDoor;
 
 volatile float targetX = 168.3;
 volatile float targetY = 0;
-volatile float targetZ = 120;
+volatile float targetZ = 250;
 volatile bool eStop = false;
 volatile bool clawopen = false; 
 volatile bool dooropen = false;
@@ -32,13 +32,21 @@ float safeX = 168.3;
 float safeZ = 69.7;
 
 // --- 原點與復位相關設定 ---
-const float HOME_X = 168.3;        // 原點 X 座標
-const float HOME_Z = 120.0;        // 原點 Z 座標
+const float HOME_X = 220.0;        // 原點 X 座標
+const float HOME_Z = 250.0;        // 原點 Z 座標
 const float HOME_BASE = 0.0;
-const float SAFE_RETRACT_Z = 120.0; // 避開干涉的「安全抬升高度」(請依實機調整)
-const float RESET_SPEED = 2.0;     // 復位時的移動速度 (數值越大跑越快)
+const float SAFE_RETRACT_Z = 250.0; // 避開干涉的「安全抬升高度」(請依實機調整)
+const float RESET_SPEED = 8.0;     // 復位時的移動速度 (數值越大跑越快)
 
 int resetState = 0; // 狀態機：0=平常模式, 1=抬升到安全高度中, 2=回歸原點中
+
+volatile float memX = 168.3;
+volatile float memZ = 120.0;
+volatile float memBase = 0.0;
+volatile float memGain = 0.0;
+volatile bool canReturnToPrev = false;
+volatile bool restorePosition = false; // 啟動復原的旗標
+int restoreState = 0;                  // 復原狀態機 (0=待機, 1=轉基座, 2=動手臂)
 
 
 float JawBaseAngle(float aBase, float& Gain);
@@ -71,6 +79,11 @@ void setup() {
 void loop() {
     // checkSerialMonitor();
     checkUART();
+    updateMusic();
+    static unsigned long lastTickPrint = 0;
+    if (millis() - lastTickPrint > 500) {
+        lastTickPrint = millis();
+    }
     
     if (millis() - lastPacketTime > 500) {
         initStates();
@@ -79,7 +92,7 @@ void loop() {
 
         static unsigned long lastWarningTime = 0;
         if (millis() - lastWarningTime > 2000) {
-        Serial.println("⚠️ WARNING: Remote Controller Disconnected! Failsafe Activated (STOP).");
+        Serial.println("WARNING: Remote Controller Disconnected! Failsafe Activated (STOP).");
         lastWarningTime = millis();
         }
     }
@@ -93,8 +106,10 @@ void setup1() {
     servoJaw1.attach(SERVO1_JAW, 500, 2500);
     servoJaw2.attach(SERVO2_JAW, 500, 2500);
     servoDoor.attach(SERVO_DOOR, 500, 2500);
+    pinMode(SPEAKER, OUTPUT);
     setupWalkerMotors();
     setupBaseMotor(); 
+    
 }
 
 /*float getTargetVelocity(int rawValue) {
@@ -124,7 +139,7 @@ void loop1() {
     targetX += targetVelX;
     targetY += targetVelY;
     targetZ += targetVelZ;*/
-
+    static unsigned long clawWaitStartTime = 0;
     clawopen = (btnClaw_raw == 0);
     dooropen = (btnDoor_raw == 0);
 
@@ -138,6 +153,7 @@ void loop1() {
 
     if (resetposition && resetState == 0) {
         resetState = 1; // 啟動復位流程：進入第一階段
+        
     }
 
     if (resetState == 1) {
@@ -180,8 +196,57 @@ void loop1() {
 
         // 判斷是否完全抵達原點
         if (reachedX && reachedZ && reachedBase) {
-            resetState = 0;          // 結束狀態機
-            resetposition = false;   // 自動清除復位指令，還原控制權
+            resetState = 3;          
+            clawWaitStartTime = millis();
+        }
+    }else if (resetState == 3) {
+        if (millis() - clawWaitStartTime >= 500) {
+            btnClaw_raw = 0;       
+            resetState = 0;        
+            resetposition = false; 
+        }
+    }
+    if (!restorePosition && restoreState != 0) {
+        restoreState = 0; // 若中途被搖桿取消，重置狀態機
+    }
+
+    if (restorePosition && restoreState == 0 && !resetposition) {
+        restoreState = 1; // 啟動復原流程
+    }
+
+    if (restoreState == 1) {
+        // 【階段 1】：只旋轉基座，手臂座標 (X, Z) 停留在歸位點的高處保持不動
+        if (abs(aBase - memBase) <= RESET_SPEED) {
+            aBase = memBase;
+            restoreState = 2; // 基座已安全轉到位，進入階段 2
+        } else {
+            aBase += (aBase < memBase) ? RESET_SPEED : -RESET_SPEED;
+        }
+    }
+    else if (restoreState == 2) {
+        // 【階段 2】：基座已就緒，開始平滑伸展 X 軸與 Z 軸
+        bool reachedX = false;
+        bool reachedZ = false;
+
+        if (abs(targetX - memX) <= RESET_SPEED) {
+            targetX = memX;
+            reachedX = true;
+        } else {
+            targetX += (targetX < memX) ? RESET_SPEED : -RESET_SPEED;
+        }
+
+        if (abs(targetZ - memZ) <= RESET_SPEED) {
+            targetZ = memZ;
+            reachedZ = true;
+        } else {
+            targetZ += (targetZ < memZ) ? RESET_SPEED : -RESET_SPEED;
+        }
+
+        // 判斷是否完全抵達記憶點
+        if (reachedX && reachedZ) {
+            Gain = memGain;          // 最後還原夾爪角度補償
+            restoreState = 0;        // 結束復原狀態機
+            restorePosition = false; // 自動清除復原指令，還原控制權
         }
     }
 
@@ -191,6 +256,7 @@ void loop1() {
     bool isValid = !isnan(aBase) && !isnan(a1) && !isnan(a2) &&
                    (a1 >= 10 && a1 <= 130) &&
                    ((a2 - a1) >= 45);
+    runBasePID(aBase); 
 
     if (isValid) {
         safeX = targetX;
@@ -199,14 +265,24 @@ void loop1() {
         float out1 = 150.0 - a1;
         float out2 = a2 - 30.0;
 
-        runBasePID(aBase); 
         triggerServo(servoArm1, out1);
         triggerServo(servoArm2, out2);
         float jawAngle = JawBaseAngle(aBase, Gain);
         triggerServo(servoJaw, jawAngle);
     } else {
+        // 退回上一個安全的合法座標
         targetX = safeX;
         targetZ = safeZ;
+
+        // 🎯 新增：自動脫困機制
+        // 如果在「自動歸位」或「自動復原」的過程中撞到死角，直接強制中斷！
+        if (resetposition || restorePosition) {
+            resetposition = false;
+            resetState = 0;
+            restorePosition = false;
+            restoreState = 0;
+            Serial.println("⚠️ 警告：自動軌跡觸碰干涉死角！已強制中斷並還原手動控制。");
+        }
     }
 
     // 控制夾爪開合
@@ -221,17 +297,27 @@ void loop1() {
     if (dooropen){
         triggerServo(servoDoor, 15.0);
     } else {
-        triggerServo(servoDoor, 80.0);
+        triggerServo(servoDoor, 100.0);
     }
     /*
     int walkForward = getWalkerPWM(joyWalkY_raw); 
     int walkTurn    = getWalkerPWM(joyWalkX_raw); 
     */
-    int leftMotorSpeed  = walkForward + 0.5*walkTurn;
-    int rightMotorSpeed = walkForward - 0.5*walkTurn;
+    int leftMotorSpeed, rightMotorSpeed;
+
+    if (walkForward == 0) {
+        leftMotorSpeed  = walkTurn;
+        rightMotorSpeed = -walkTurn;
+    } else if (walkForward > 0) {
+        leftMotorSpeed  = walkForward + 0.5 * walkTurn;
+        rightMotorSpeed = walkForward - 0.5 * walkTurn;
+    } else {
+        leftMotorSpeed  = walkForward - 0.5 * walkTurn;
+        rightMotorSpeed = walkForward + 0.5 * walkTurn;
+    }
 
     leftMotorSpeed  = constrain(leftMotorSpeed, -MAX_PWM_LIMIT, MAX_PWM_LIMIT);
-    rightMotorSpeed = constrain(rightMotorSpeed, -MAX_PWM_LIMIT, MAX_PWM_LIMIT)*1.25;
+    rightMotorSpeed = constrain(rightMotorSpeed, -MAX_PWM_LIMIT, MAX_PWM_LIMIT) * 1.25;
 
     setWalkerSpeed(leftMotorSpeed, rightMotorSpeed);
 

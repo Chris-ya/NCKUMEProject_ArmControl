@@ -1,13 +1,18 @@
 #include "Config.h"
 
+// 將舊的理論參數註解保留，直接替換為實測精準數值
+/*
 const float PPR = 11.0;
 const float Internal_Gear_Ratio = 46.8;
 const float Outer_Gear_Ratio = 3.0;
-const float TICKS_PER_REV = PPR * Internal_Gear_Ratio * Outer_Gear_Ratio; 
+const float TICKS_PER_REV = PPR * Internal_Gear_Ratio * Outer_Gear_Ratio * 2.0; 
+*/
 
-// PID 參數：可以根據上機狀況微調
+// 🎯 直接使用實測的單圈總脈衝數
+const float TICKS_PER_REV = 3430.0; 
+
 float Kp = 20.0;
-float Ki = 0.01; 
+float Ki = 0.01;
 float Kd = 0.5;  
 
 float errorSum = 0;
@@ -15,8 +20,16 @@ float lastError = 0;
 
 volatile long baseTicks = 0;
 
+// =========================================================================
+// 🎯 修正：2X 正交解碼中斷函式 (具備震盪自我消去、防偽脈衝能力)
+// =========================================================================
 void baseEncoderISR() {
-    if (digitalRead(ENCB_PIN) == LOW) {
+    bool aState = digitalRead(ENCA_PIN);
+    bool bState = digitalRead(ENCB_PIN);
+    
+    // 當 A 相狀態改變時：若 A 訊號與 B 訊號不同相，代表正轉；相同則代表反轉
+    // 這種互鎖邏輯可以確保任何在臨界點的單線突波與抖動，都會正負相消，不累積物理誤差
+    if (aState != bState) {
         baseTicks++;
     } else {
         baseTicks--;
@@ -34,7 +47,9 @@ void setupBaseMotor() {
     
     pinMode(ENCA_PIN, INPUT_PULLUP);
     pinMode(ENCB_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(ENCA_PIN), baseEncoderISR, RISING);
+    
+    // 🎯 修正：將 RISING 改為 CHANGE，完整捕捉上升與下降緣
+    attachInterrupt(digitalPinToInterrupt(ENCA_PIN), baseEncoderISR, CHANGE);
 }
 
 void setMotorPower(int power) {
@@ -110,7 +125,7 @@ void runBasePID(float targetAngleDegree) {
     setMotorPower((int)output); 
     lastError = errorDegree; 
 
-    /*// ==========================================
+    // ==========================================
     // 10. Serial 監控：每 100ms (0.1秒) 印出一次
     // ==========================================
     if (millis() - lastLogTime > 100) {
@@ -119,5 +134,5 @@ void runBasePID(float targetAngleDegree) {
         Serial.print(" | Error: "); Serial.print(errorDegree);
         Serial.print(" | PWM_Out: "); Serial.println((int)output);
         lastLogTime = millis();
-    }*/
+    }
 }

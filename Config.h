@@ -42,9 +42,9 @@
 // -------------------------------------------------------------------------
 // 【區域七：右步足馬達組 (M2)】
 // -------------------------------------------------------------------------
-#define WALKER_M2_LPWM 16
-#define WALKER_M2_RPWM 17 
-#define WALKER_R_EN 18
+#define WALKER_M2_LPWM 17
+#define WALKER_M2_RPWM 16 
+#define WALKER_R_EN 18 
 
 // -------------------------------------------------------------------------
 // 【區域六：左步足馬達組 (M1)】
@@ -52,6 +52,8 @@
 #define WALKER_M1_LPWM 19 
 #define WALKER_M1_RPWM 20
 #define WALKER_L_EN 21 
+// ====================================================
+#define SPEAKER 28
 // =========================================================================
 // 全域變數宣告
 // =========================================================================
@@ -66,9 +68,16 @@ extern volatile int btnDoor_raw;
 extern volatile float targetX;
 extern volatile float targetY;
 extern volatile float targetZ;
+extern volatile float memX;
+extern volatile float memZ;
+extern volatile float memBase;
+extern volatile float memGain;
+extern volatile bool canReturnToPrev;
+extern volatile bool restorePosition;
 extern volatile bool eStop;
 extern volatile bool clawopen;
 extern volatile bool resetposition;
+extern volatile long baseTicks;
 extern float Gain;
 
 // =========================================================================
@@ -86,4 +95,7 @@ void checkSerialMonitor();
 
 void calculateAngles(float x, float z, float &angle1, float &angle2);
 
+void startHaruhikage();
+void updateMusic();
+void stopMusic();
 #endif
